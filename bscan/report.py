@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .fingerprint import Fingerprint
+from .misconfig import Finding
 from .modules import ModuleScan
 from .vulndb import Match
 
@@ -21,11 +22,15 @@ SEVERITY_STYLES = {
 }
 
 
+_SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "unknown": 4}
+
+
 def render_text(
     target: str,
     fp: Fingerprint,
     modules: ModuleScan,
     matches: List[Match],
+    findings: List[Finding] | None = None,
 ) -> None:
     con = Console()
     con.rule(f"[bold]Bscan[/bold] — {target}")
@@ -65,6 +70,25 @@ def render_text(
     if modules.components:
         con.print(f"[cyan]Components:[/cyan] {', '.join(modules.components)}")
 
+    if findings:
+        con.rule("Misconfigurations")
+        tbl = Table()
+        tbl.add_column("id", style="bold")
+        tbl.add_column("severity")
+        tbl.add_column("category", style="dim")
+        tbl.add_column("title")
+        tbl.add_column("evidence", style="dim")
+        for f in sorted(findings, key=lambda x: (_SEV_ORDER.get(x.severity, 9), x.id)):
+            style = SEVERITY_STYLES.get(f.severity, "white")
+            tbl.add_row(
+                f.id,
+                f"[{style}]{f.severity}[/{style}]",
+                f.category,
+                f.title,
+                f.evidence[:80],
+            )
+        con.print(tbl)
+
     if matches:
         con.rule("Potential vulnerabilities")
         tbl = Table()
@@ -92,6 +116,7 @@ def render_json(
     fp: Fingerprint,
     modules: ModuleScan,
     matches: List[Match],
+    findings: List[Finding] | None = None,
 ) -> str:
     payload = {
         "target": target,
@@ -105,5 +130,6 @@ def render_json(
             {"vuln": asdict(m.vuln), "detected_version": m.detected_version}
             for m in matches
         ],
+        "misconfigurations": [f.to_dict() for f in (findings or [])],
     }
     return json.dumps(payload, indent=2, ensure_ascii=False)

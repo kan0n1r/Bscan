@@ -1,0 +1,256 @@
+# Bscan — 1C-Bitrix misconfiguration checks
+#
+# Each check is a single HTTP request whose response is evaluated against
+# match_all (AND) and match_any (OR) conditions. A condition is one of:
+#
+#   status:          <int or list of ints>    response status is in the list
+#   not_status:      <int or list of ints>    response status is NOT in the list (and != 0 = network error)
+#   body_contains:   "string"                 body contains the substring
+#   body_regex:      "pattern"                body matches the regex (case-insensitive, dotall)
+#   header:          "name"                   header present; optional:
+#     value_contains: "substr"
+#     value_regex:    "pattern"
+#
+# Severity: low | medium | high | critical
+
+checks:
+  # ---------- File exposure ----------
+
+  - id: BX-MISC-SETTINGS-EXPOSED
+    title: "/bitrix/.settings.php readable"
+    severity: critical
+    path: /bitrix/.settings.php
+    match_all:
+      - status: 200
+    match_any:
+      - body_contains: "'connections'"
+      - body_contains: "crypto"
+      - body_contains: "cache"
+    refs:
+      - https://dev.1c-bitrix.ru/learning/course/index.php?COURSE_ID=43&LESSON_ID=5148
+
+  - id: BX-MISC-SETTINGS-EXTRA-EXPOSED
+    title: "/bitrix/.settings_extra.php readable"
+    severity: critical
+    path: /bitrix/.settings_extra.php
+    match_all:
+      - status: 200
+
+  - id: BX-MISC-DBCONN-EXPOSED
+    title: "/bitrix/php_interface/dbconn.php readable"
+    severity: critical
+    path: /bitrix/php_interface/dbconn.php
+    match_all:
+      - status: 200
+    match_any:
+      - body_contains: "DBLogin"
+      - body_contains: "DBPassword"
+      - body_contains: "$DBType"
+
+  - id: BX-MISC-AFTER-CONNECT-EXPOSED
+    title: "/bitrix/php_interface/after_connect.php readable"
+    severity: high
+    path: /bitrix/php_interface/after_connect.php
+    match_all:
+      - status: 200
+
+  - id: BX-MISC-BACKUP-DIR
+    title: "/bitrix/backup/ directory reachable"
+    severity: critical
+    path: /bitrix/backup/
+    match_any:
+      - body_regex: "Index of /bitrix/backup"
+      - body_contains: "autorestore"
+      - status: 200
+
+  - id: BX-MISC-UPLOAD-LISTING
+    title: "/upload/ directory listing"
+    severity: medium
+    path: /upload/
+    match_all:
+      - status: 200
+    match_any:
+      - body_regex: "Index of /upload"
+      - body_regex: "<title>Index of"
+
+  - id: BX-MISC-BITRIX-TMP-LISTING
+    title: "/bitrix/tmp/ directory reachable"
+    severity: high
+    path: /bitrix/tmp/
+    match_any:
+      - body_regex: "Index of /bitrix/tmp"
+      - status: 200
+
+  - id: BX-MISC-CACHE-LISTING
+    title: "/bitrix/cache/ directory reachable"
+    severity: high
+    path: /bitrix/cache/
+    match_any:
+      - body_regex: "Index of /bitrix/cache"
+      - status: 200
+
+  # ---------- Install / update wizard ----------
+
+  - id: BX-MISC-INSTALL-WIZARD
+    title: "Install wizard reachable on production"
+    severity: high
+    path: /install/index.php
+    match_all:
+      - status: 200
+    match_any:
+      - body_contains: "Bitrix Setup Wizard"
+      - body_contains: "Мастер установки Bitrix"
+      - body_contains: "install_step"
+
+  - id: BX-MISC-BITRIX-INSTALL
+    title: "/bitrix/install/ reachable"
+    severity: medium
+    path: /bitrix/install/
+    match_any:
+      - status: 200
+      - body_regex: "Index of /bitrix/install"
+
+  # ---------- Admin / info disclosure endpoints ----------
+
+  - id: BX-MISC-SITE-CHECKER-PREAUTH
+    title: "/bitrix/admin/site_checker.php reachable pre-auth"
+    severity: high
+    path: /bitrix/admin/site_checker.php
+    match_all:
+      - status: 200
+    match_any:
+      - body_contains: "site_checker"
+      - body_contains: "php_version"
+      - body_contains: "PHP settings"
+
+  - id: BX-MISC-SPREAD-VERSION
+    title: "/bitrix/spread.php discloses Bitrix version"
+    severity: low
+    path: /bitrix/spread.php
+    match_all:
+      - status: 200
+    match_any:
+      - body_regex: "[0-9]+\\.[0-9]+\\.[0-9]+"
+      - body_contains: "bitrix"
+
+  - id: BX-MISC-UPDATE-SYSTEM-VERBOSE
+    title: "/bitrix/admin/update_system.php leaks env on error"
+    severity: medium
+    path: /bitrix/admin/update_system.php
+    match_all:
+      - status: 200
+    match_any:
+      - body_contains: "Fatal error"
+      - body_contains: "Warning:"
+      - body_contains: "on line"
+
+  - id: BX-MISC-AUTOSAVE-PREAUTH
+    title: "/bitrix/tools/autosave.php reachable pre-auth"
+    severity: medium
+    path: /bitrix/tools/autosave.php
+    match_all:
+      - status: 200
+
+  - id: BX-MISC-UPLOAD-TOOL-PREAUTH
+    title: "/bitrix/tools/upload.php reachable pre-auth"
+    severity: high
+    path: /bitrix/tools/upload.php
+    match_all:
+      - status: 200
+
+  - id: BX-MISC-CRON-EVENTS-EXPOSED
+    title: "/bitrix/tools/cron_events.php reachable from public"
+    severity: medium
+    path: /bitrix/tools/cron_events.php
+    match_all:
+      - status: 200
+
+  - id: BX-MISC-AJAX-PUBLIC
+    title: "/bitrix/tools/public/ reachable (legacy AJAX)"
+    severity: low
+    path: /bitrix/tools/public/
+    match_any:
+      - status: 200
+      - body_regex: "Index of /bitrix/tools/public"
+
+  - id: BX-MISC-SERVICES-AJAX
+    title: "/bitrix/services/main/ajax.php responding"
+    severity: low
+    path: /bitrix/services/main/ajax.php
+    match_all:
+      - status: 200
+
+  # ---------- Doc-root residue ----------
+
+  - id: BX-DOCROOT-PHPINFO
+    title: "phpinfo() page in web root"
+    severity: high
+    path: /phpinfo.php
+    match_all:
+      - status: 200
+    match_any:
+      - body_contains: "PHP Version"
+      - body_contains: "phpinfo()"
+
+  - id: BX-DOCROOT-INFO-PHP
+    title: "info.php in web root"
+    severity: high
+    path: /info.php
+    match_all:
+      - status: 200
+    match_any:
+      - body_contains: "PHP Version"
+      - body_contains: "phpinfo()"
+
+  - id: BX-DOCROOT-TEST-PHP
+    title: "test.php in web root"
+    severity: medium
+    path: /test.php
+    match_all:
+      - status: 200
+
+  - id: BX-DOCROOT-GIT
+    title: ".git/HEAD exposed"
+    severity: high
+    path: /.git/HEAD
+    match_all:
+      - status: 200
+      - body_contains: "ref:"
+
+  - id: BX-DOCROOT-SVN
+    title: ".svn/entries exposed"
+    severity: high
+    path: /.svn/entries
+    match_all:
+      - status: 200
+
+  - id: BX-DOCROOT-ENV
+    title: ".env exposed"
+    severity: critical
+    path: /.env
+    match_all:
+      - status: 200
+    match_any:
+      - body_regex: "[A-Z_]+="
+      - body_contains: "DB_"
+      - body_contains: "APP_KEY"
+
+  - id: BX-DOCROOT-DSSTORE
+    title: ".DS_Store exposed"
+    severity: low
+    path: /.DS_Store
+    match_all:
+      - status: 200
+      - body_regex: "Bud1"
+
+  # ---------- Module install leakage (common modules) ----------
+  # These rely on server serving raw PHP as text — rare but high-value when present.
+
+  - id: BX-MISC-MAIN-INSTALL-VERSION
+    title: "Main module install/version.php served as plaintext"
+    severity: medium
+    path: /bitrix/modules/main/install/version.php
+    match_all:
+      - status: 200
+    match_any:
+      - body_contains: "VERSION"

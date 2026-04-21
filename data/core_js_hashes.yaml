@@ -1,0 +1,46 @@
+# Bscan — static-asset hash database
+#
+# Maps the sha256 of a known Bitrix static asset to the module version that
+# shipped that exact file. Primary use: identify the `main` module version
+# when `?v=XX.XX.XX` cache-busters are stripped by hardened proxies / CDNs.
+#
+# Populate this file by:
+#   1. Downloading a Bitrix distribution or upgrading a lab install.
+#   2. sha256 of the file, e.g.
+#        sha256sum /bitrix/js/main/core/core.js
+#   3. Appending an entry with: path (relative, no leading slash),
+#      sha256 (lowercase hex), version (the `main` module version string),
+#      and target (usually "main"; use "core" for the core bundle as a whole).
+#
+# Schema:
+#   hashes:
+#     - path:    relative path under site root, no leading slash
+#       sha256:  lowercase hex sha256 of the raw file bytes
+#       version: version string (e.g. "22.0.400")
+#       target:  vuln-db target for matching (default: "main")
+#
+# Entries below are PLACEHOLDERS — replace sha256 values with real ones from
+# your lab installs. Leaving placeholders in place is harmless (they will
+# never match a real file) but provides the file-path list the scanner
+# will probe.
+
+hashes:
+  - path: bitrix/js/main/core/core.js
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    version: "PLACEHOLDER-replace-with-real-hash"
+    target: main
+
+  - path: bitrix/js/main/core/core_ajax.js
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    version: "PLACEHOLDER-replace-with-real-hash"
+    target: main
+
+  - path: bitrix/js/main/loader.js
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    version: "PLACEHOLDER-replace-with-real-hash"
+    target: main
+
+  - path: bitrix/js/main/core/core_window.js
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    version: "PLACEHOLDER-replace-with-real-hash"
+    target: main

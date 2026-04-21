@@ -17,6 +17,7 @@ from rich.progress import (
 from . import __version__
 from .banner import print_banner, stderr_console
 from .fingerprint import fingerprint
+from .hashes import HashDB
 from .http import Client
 from .modules import COMMON_MODULES, ModuleScan, scan_modules
 from .report import render_json, render_text
@@ -24,6 +25,7 @@ from .vulndb import Match, VulnDB
 
 
 DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "vulns.yaml"
+DEFAULT_HASH_DB = Path(__file__).resolve().parent.parent / "data" / "core_js_hashes.yaml"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -34,6 +36,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("-u", "--url", help="Target URL (http(s)://host[:port])")
     p.add_argument("-f", "--file", help="File with one URL per line")
     p.add_argument("--db", default=str(DEFAULT_DB), help="Path to vuln YAML db")
+    p.add_argument("--hash-db", default=str(DEFAULT_HASH_DB), help="Path to static-asset hash YAML db")
     p.add_argument("--proxy", help="HTTP(S) proxy, e.g. http://127.0.0.1:8080")
     p.add_argument("--insecure", action="store_true", help="Skip TLS verification")
     p.add_argument("--timeout", type=float, default=15.0, help="Per-request timeout seconds")
@@ -57,7 +60,13 @@ def _load_targets(args: argparse.Namespace) -> List[str]:
     return targets
 
 
-def _scan_one(target: str, args: argparse.Namespace, db: VulnDB, show_progress: bool) -> int:
+def _scan_one(
+    target: str,
+    args: argparse.Namespace,
+    db: VulnDB,
+    hash_db: HashDB,
+    show_progress: bool,
+) -> int:
     with Client(
         base_url=target,
         timeout=args.timeout,
@@ -65,14 +74,16 @@ def _scan_one(target: str, args: argparse.Namespace, db: VulnDB, show_progress: 
         proxy=args.proxy,
     ) as client:
         if show_progress:
-            rc = _scan_with_progress(target, client, args, db)
+            rc = _scan_with_progress(target, client, args, db, hash_db)
         else:
-            rc = _scan_quiet(target, client, args, db)
+            rc = _scan_quiet(target, client, args, db, hash_db)
     return rc
 
 
-def _scan_quiet(target: str, client: Client, args: argparse.Namespace, db: VulnDB) -> int:
-    fp = fingerprint(client)
+def _scan_quiet(
+    target: str, client: Client, args: argparse.Namespace, db: VulnDB, hash_db: HashDB
+) -> int:
+    fp = fingerprint(client, hash_db=hash_db)
     root = client.get("/")
     mods = scan_modules(client, root, workers=args.workers) if not args.no_modules else ModuleScan()
     matches = _collect_matches(fp, mods, db)
@@ -83,9 +94,12 @@ def _scan_quiet(target: str, client: Client, args: argparse.Namespace, db: VulnD
     return 0 if fp.is_bitrix else 2
 
 
-def _scan_with_progress(target: str, client: Client, args: argparse.Namespace, db: VulnDB) -> int:
+def _scan_with_progress(
+    target: str, client: Client, args: argparse.Namespace, db: VulnDB, hash_db: HashDB
+) -> int:
     con = stderr_console()
     total_modules = 0 if args.no_modules else len(COMMON_MODULES)
+    fp_total = 4 + len(hash_db.paths) + 1
 
     with Progress(
         SpinnerColumn(),
@@ -98,14 +112,14 @@ def _scan_with_progress(target: str, client: Client, args: argparse.Namespace, d
         transient=True,
     ) as progress:
         fp_task = progress.add_task(
-            f"fingerprint {target}", total=5, detail=""
+            f"fingerprint {target}", total=fp_total, detail=""
         )
 
         def on_fp_step(name: str) -> None:
             progress.update(fp_task, advance=1, detail=name)
 
-        fp = fingerprint(client, on_step=on_fp_step)
-        progress.update(fp_task, completed=5, detail="done")
+        fp = fingerprint(client, on_step=on_fp_step, hash_db=hash_db)
+        progress.update(fp_task, completed=fp_total, detail="done")
 
         root = client.get("/")
 
@@ -132,9 +146,10 @@ def _scan_with_progress(target: str, client: Client, args: argparse.Namespace, d
 
 def _collect_matches(fp, mods: ModuleScan, db: VulnDB) -> List[Match]:
     matches: List[Match] = []
-    core_version = fp.core_version or fp.main_module_version
+    core_version = fp.best_core_version
     if core_version:
         matches += db.match("core", core_version)
+        matches += db.match("main", core_version)
     for m in mods.modules:
         if m.version:
             matches += db.match(m.name, m.version)
@@ -155,10 +170,11 @@ def main(argv: List[str] | None = None) -> int:
         print_banner()
 
     db = VulnDB.load(Path(args.db))
+    hash_db = HashDB.load(Path(args.hash_db))
     rc = 0
     for t in targets:
         try:
-            rc |= _scan_one(t, args, db, show_progress=show_progress)
+            rc |= _scan_one(t, args, db, hash_db, show_progress=show_progress)
         except KeyboardInterrupt:
             print("aborted", file=sys.stderr)
             return 130

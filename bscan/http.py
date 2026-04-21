@@ -20,6 +20,7 @@ class Response:
     headers: dict
     text: str
     ok: bool
+    content: bytes = b""
 
     @property
     def is_html(self) -> bool:
@@ -59,13 +60,14 @@ class Client:
         try:
             r = self._client.get(url, **kwargs)
         except httpx.HTTPError as e:
-            return Response(url=url, status=0, headers={}, text=str(e), ok=False)
+            return Response(url=url, status=0, headers={}, text=str(e), ok=False, content=b"")
         return Response(
             url=str(r.url),
             status=r.status_code,
             headers=dict(r.headers),
             text=r.text,
             ok=r.is_success,
+            content=r.content,
         )
 
     def head(self, path: str, **kwargs) -> Response:

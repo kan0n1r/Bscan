@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
+from .hashes import HashDB, sha256_bytes
 from .http import Client, Response
 
 
@@ -14,6 +15,7 @@ CONFIDENCE_SIGNALS = {
     "cookie_bitrix_sm": 40,
     "header_powered": 40,
     "meta_generator": 35,
+    "hash_match": 50,
     "path_bitrix_admin": 25,
     "path_bitrix_js": 20,
     "html_comment": 15,
@@ -28,6 +30,9 @@ class Fingerprint:
     signals: List[str] = field(default_factory=list)
     core_version: Optional[str] = None
     main_module_version: Optional[str] = None
+    hash_version: Optional[str] = None
+    hash_source: Optional[str] = None
+    core_js_sha256: Optional[str] = None
     server: Optional[str] = None
     powered_by: Optional[str] = None
     generator: Optional[str] = None
@@ -38,6 +43,10 @@ class Fingerprint:
         self.signals.append(signal)
         self.confidence += CONFIDENCE_SIGNALS.get(signal, 5)
         self.is_bitrix = self.confidence >= 20
+
+    @property
+    def best_core_version(self) -> Optional[str]:
+        return self.hash_version or self.main_module_version or self.core_version
 
 
 _META_GEN_RE = re.compile(
@@ -84,16 +93,44 @@ def _probe_admin(client: Client, fp: Fingerprint) -> None:
         fp.add("path_bitrix_admin")
 
 
+def _extract_version_from_text(text: str) -> Optional[str]:
+    for rx in (_VERSION_IN_JS_RE, _CORE_JS_VERSION_RE):
+        m = rx.search(text[:50_000])
+        if m:
+            return m.group(1)
+    return None
+
+
 def _probe_core_js(client: Client, fp: Fingerprint) -> None:
     r = client.get("/bitrix/js/main/core/core.js")
-    if r.status != 200 or len(r.text) < 1024:
+    if r.status != 200 or len(r.content) < 1024:
         return
     fp.add("path_bitrix_js")
-    for rx in (_VERSION_IN_JS_RE, _CORE_JS_VERSION_RE):
-        m = rx.search(r.text[:50_000])
-        if m:
-            fp.main_module_version = m.group(1)
-            break
+    fp.core_js_sha256 = sha256_bytes(r.content)
+    v = _extract_version_from_text(r.text)
+    if v:
+        fp.main_module_version = v
+
+
+def _probe_hashes(client: Client, fp: Fingerprint, db: HashDB, on_step) -> None:
+    if len(db) == 0:
+        return
+    for path in db.paths:
+        if fp.hash_version:
+            return
+        on_step(f"hash {path}")
+        if path == "bitrix/js/main/core/core.js" and fp.core_js_sha256:
+            digest = fp.core_js_sha256
+        else:
+            r = client.get("/" + path)
+            if r.status != 200 or len(r.content) < 512:
+                continue
+            digest = sha256_bytes(r.content)
+        entry = db.lookup(path, digest)
+        if entry:
+            fp.hash_version = entry.version
+            fp.hash_source = path
+            fp.add("hash_match")
 
 
 def _probe_robots(client: Client, fp: Fingerprint) -> None:
@@ -102,7 +139,11 @@ def _probe_robots(client: Client, fp: Fingerprint) -> None:
         fp.add("robots_bitrix")
 
 
-def fingerprint(client: Client, on_step: OnStep = None) -> Fingerprint:
+def fingerprint(
+    client: Client,
+    on_step: OnStep = None,
+    hash_db: Optional[HashDB] = None,
+) -> Fingerprint:
     fp = Fingerprint()
 
     def step(name: str) -> None:
@@ -117,6 +158,9 @@ def fingerprint(client: Client, on_step: OnStep = None) -> Fingerprint:
 
     step("GET /bitrix/js/main/core/core.js")
     _probe_core_js(client, fp)
+
+    if hash_db is not None:
+        _probe_hashes(client, fp, hash_db, step)
 
     step("GET /bitrix/admin/index.php")
     _probe_admin(client, fp)

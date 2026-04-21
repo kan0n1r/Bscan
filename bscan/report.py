@@ -37,6 +37,13 @@ def render_text(
     fp_tbl.add_row("Confidence", f"{fp.confidence}%")
     fp_tbl.add_row("Core version", fp.core_version or "-")
     fp_tbl.add_row("main module version", fp.main_module_version or "-")
+    if fp.hash_version:
+        fp_tbl.add_row(
+            "Hash-matched version",
+            f"[bold green]{fp.hash_version}[/bold green] [dim]({fp.hash_source})[/dim]",
+        )
+    if fp.core_js_sha256:
+        fp_tbl.add_row("core.js sha256", f"[dim]{fp.core_js_sha256}[/dim]")
     fp_tbl.add_row("Server", fp.server or "-")
     fp_tbl.add_row("Powered-By", fp.powered_by or "-")
     fp_tbl.add_row("Generator", fp.generator or "-")

@@ -1,0 +1,114 @@
+# Bscan — behavioral version fingerprinting
+#
+# Probes, 404-page markers, cookie presence, and header patterns are each
+# mapped to a version constraint (`implies:`). After running all checks,
+# Bscan intersects the constraints to produce a single range, e.g.
+# ">=20.0,<=22.99". Use this when hashes are stripped / ?v= is removed.
+#
+# Version-spec syntax: comma-separated list of (`>=`, `>`, `<=`, `<`, `=`)
+# operators with a dotted version.
+
+probes:
+  # ---------- Endpoints introduced at a known branch ----------
+
+  - id: UI-MODULE
+    path: /bitrix/js/ui/
+    when_status_any: [200, 403]
+    implies: ">=18.0"
+
+  - id: REST-SERVICE
+    path: /bitrix/services/rest/
+    when_status_any: [200, 400, 401, 403]
+    implies: ">=18.5"
+
+  - id: LANDING-START
+    path: /bitrix/components/bitrix/landing.start/
+    when_status_any: [200, 403]
+    implies: ">=17.5"
+
+  - id: COMPOSITE-BANNER
+    path: /bitrix/components/bitrix/composite.banner/
+    when_status_any: [200, 403]
+    implies: ">=14.0"
+
+  - id: POLYFILL-PW
+    path: /bitrix/js/main/polyfill.pw.bundle.js
+    when_status: 200
+    implies: ">=21.0"
+
+  - id: CORE-ES6
+    path: /bitrix/js/main/core/core_es6.js
+    when_status: 200
+    implies: ">=20.0"
+
+  - id: CORE-PROMISE
+    path: /bitrix/js/main/core/core_promise.js
+    when_status: 200
+    implies: ">=18.0"
+
+  - id: LANDING-TOOLS
+    path: /bitrix/tools/landing/
+    when_status_any: [200, 403]
+    implies: ">=18.0"
+
+  # ---------- Endpoints present only in older branches ----------
+
+  - id: CORE-FX-LEGACY
+    path: /bitrix/js/main/core/core_fx.js
+    when_status: 200
+    implies: "<=17.99"
+
+  # ---------- Bitrix24 / REST variants ----------
+
+  - id: REST-MAIN-VERSION
+    path: /rest/main.version
+    when_status_any: [200]
+    when_body_contains: "result"
+    implies: ">=19.0"
+
+# ---------- 404 page fingerprints ----------
+# The path uses ${rand} so every run gets a unique nonexistent URL.
+
+errorpage:
+  path: /bitrix/__bscan_${rand}
+  fingerprints:
+    - markers: ["bx-error-page"]
+      implies: ">=17.0,<=18.99"
+    - markers: ["window.BX.message"]
+      implies: ">=22.0"
+    - markers: ["Страница не найдена"]
+      implies: ">=14.0"
+    - markers: ["404 Not Found", "bitrix"]
+      implies: ">=16.0"
+
+# ---------- Cookie presence rules ----------
+
+cookies:
+  - id: COOKIE-SALE-PRODUCT-LIST
+    cookie: BITRIX_SM_SALE_PRODUCT_LIST_
+    implies: ">=18.0"
+  - id: COOKIE-LAST-VISIT
+    cookie: BITRIX_SM_LAST_VISIT
+    implies: ">=16.0"
+  - id: COOKIE-SALE-UID
+    cookie: BITRIX_SM_SALE_UID
+    implies: ">=13.0"
+
+# ---------- Response-header rules ----------
+
+headers:
+  - id: HDR-POWERED-CMS-MODERN
+    header: X-Powered-CMS
+    value_contains: "1C-Bitrix"
+    implies: ">=19.0"
+  - id: HDR-POWERED-CMS-LEGACY
+    header: X-Powered-CMS
+    value_contains: "Bitrix Site Manager"
+    implies: "<=18.99"
+  - id: HDR-REDIRECT-PROCESSED
+    header: X-Bitrix-Redirect-Processed
+    implies: ">=17.0"
+  - id: HDR-COMPOSITE-CACHE
+    header: X-Bitrix-Composite
+    value_regex: "Cache \\((hit|miss)\\)"
+    implies: ">=17.0"

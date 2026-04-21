@@ -6,6 +6,8 @@ from typing import Dict, List, Optional
 
 import yaml
 
+from .version import cmp as _cmp, in_range as _in_range
+
 
 @dataclass
 class Vuln:
@@ -23,55 +25,6 @@ class Vuln:
 class Match:
     vuln: Vuln
     detected_version: Optional[str]
-
-
-def _parse_version(v: str) -> tuple:
-    parts = []
-    for chunk in v.split("."):
-        try:
-            parts.append(int(chunk))
-        except ValueError:
-            digits = "".join(ch for ch in chunk if ch.isdigit())
-            parts.append(int(digits) if digits else 0)
-    return tuple(parts)
-
-
-def _cmp(a: str, b: str) -> int:
-    ta, tb = _parse_version(a), _parse_version(b)
-    length = max(len(ta), len(tb))
-    ta = ta + (0,) * (length - len(ta))
-    tb = tb + (0,) * (length - len(tb))
-    if ta < tb:
-        return -1
-    if ta > tb:
-        return 1
-    return 0
-
-
-def _in_range(version: str, spec: str) -> bool:
-    spec = spec.strip()
-    if spec in ("*", ""):
-        return True
-    for part in [p.strip() for p in spec.split(",") if p.strip()]:
-        for op in ("<=", ">=", "<", ">", "==", "="):
-            if part.startswith(op):
-                other = part[len(op):].strip()
-                c = _cmp(version, other)
-                if op == "<" and not c < 0:
-                    return False
-                if op == "<=" and not c <= 0:
-                    return False
-                if op == ">" and not c > 0:
-                    return False
-                if op == ">=" and not c >= 0:
-                    return False
-                if op in ("==", "=") and c != 0:
-                    return False
-                break
-        else:
-            if _cmp(version, part) != 0:
-                return False
-    return True
 
 
 class VulnDB:

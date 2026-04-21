@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from rich.progress import (
     BarColumn,
@@ -17,6 +17,7 @@ from rich.progress import (
 from . import __version__
 from .banner import print_banner, stderr_console
 from .fingerprint import fingerprint
+from .behavior import BehaviorConfig, BehaviorResult, load_config as load_behavior, run_behavior
 from .hashes import HashDB
 from .http import Client
 from .misconfig import Check, Finding, audit_cookies, audit_headers, load_checks, run_checks
@@ -28,6 +29,7 @@ from .vulndb import Match, VulnDB
 DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "vulns.yaml"
 DEFAULT_HASH_DB = Path(__file__).resolve().parent.parent / "data" / "core_js_hashes.yaml"
 DEFAULT_MISCONFIG = Path(__file__).resolve().parent.parent / "data" / "misconfig.yaml"
+DEFAULT_BEHAVIOR = Path(__file__).resolve().parent.parent / "data" / "behavior.yaml"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -40,12 +42,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", default=str(DEFAULT_DB), help="Path to vuln YAML db")
     p.add_argument("--hash-db", default=str(DEFAULT_HASH_DB), help="Path to static-asset hash YAML db")
     p.add_argument("--misconfig-db", default=str(DEFAULT_MISCONFIG), help="Path to misconfig YAML checks")
+    p.add_argument("--behavior-db", default=str(DEFAULT_BEHAVIOR), help="Path to behavior YAML probes")
     p.add_argument("--proxy", help="HTTP(S) proxy, e.g. http://127.0.0.1:8080")
     p.add_argument("--insecure", action="store_true", help="Skip TLS verification")
     p.add_argument("--timeout", type=float, default=15.0, help="Per-request timeout seconds")
     p.add_argument("--workers", type=int, default=8, help="Concurrent module probes")
     p.add_argument("--no-modules", action="store_true", help="Skip module scanning")
     p.add_argument("--no-misconfig", action="store_true", help="Skip misconfiguration checks")
+    p.add_argument("--no-behavior", action="store_true", help="Skip behavioral version fingerprinting")
     p.add_argument("--json", action="store_true", help="JSON output (suppresses banner/progress)")
     p.add_argument("-q", "--quiet", action="store_true", help="Suppress banner and progress")
     p.add_argument("-V", "--version", action="version", version=f"bscan {__version__}")
@@ -70,6 +74,7 @@ def _scan_one(
     db: VulnDB,
     hash_db: HashDB,
     checks: List[Check],
+    behavior: BehaviorConfig,
     show_progress: bool,
 ) -> int:
     with Client(
@@ -79,9 +84,9 @@ def _scan_one(
         proxy=args.proxy,
     ) as client:
         if show_progress:
-            rc = _scan_with_progress(target, client, args, db, hash_db, checks)
+            rc = _scan_with_progress(target, client, args, db, hash_db, checks, behavior)
         else:
-            rc = _scan_quiet(target, client, args, db, hash_db, checks)
+            rc = _scan_quiet(target, client, args, db, hash_db, checks, behavior)
     return rc
 
 
@@ -92,16 +97,22 @@ def _scan_quiet(
     db: VulnDB,
     hash_db: HashDB,
     checks: List[Check],
+    behavior: BehaviorConfig,
 ) -> int:
     fp = fingerprint(client, hash_db=hash_db)
     root = client.get("/")
     mods = scan_modules(client, root, workers=args.workers) if not args.no_modules else ModuleScan()
     findings = _run_misconfig(client, root, checks) if not args.no_misconfig else []
+    beh = (
+        run_behavior(client, behavior, root=root)
+        if not args.no_behavior and behavior.total_probes
+        else None
+    )
     matches = _collect_matches(fp, mods, db)
     if args.json:
-        print(render_json(target, fp, mods, matches, findings))
+        print(render_json(target, fp, mods, matches, findings, beh))
     else:
-        render_text(target, fp, mods, matches, findings)
+        render_text(target, fp, mods, matches, findings, beh)
     return 0 if fp.is_bitrix else 2
 
 
@@ -112,6 +123,7 @@ def _scan_with_progress(
     db: VulnDB,
     hash_db: HashDB,
     checks: List[Check],
+    behavior: BehaviorConfig,
 ) -> int:
     con = stderr_console()
     total_modules = 0 if args.no_modules else len(COMMON_MODULES)
@@ -166,11 +178,23 @@ def _scan_with_progress(
 
             findings = _run_misconfig(client, root, checks, on_check=on_check)
 
+        beh: Optional[BehaviorResult] = None
+        if not args.no_behavior and behavior.total_probes:
+            beh_task = progress.add_task(
+                "behavior", total=behavior.total_probes, detail=""
+            )
+
+            def on_beh(pid: str, hit: bool) -> None:
+                marker = "[green]✓[/green]" if hit else "[dim]·[/dim]"
+                progress.update(beh_task, advance=1, detail=f"{marker} {pid}")
+
+            beh = run_behavior(client, behavior, root=root, on_probe=on_beh)
+
     matches = _collect_matches(fp, mods, db)
     if args.json:
-        print(render_json(target, fp, mods, matches, findings))
+        print(render_json(target, fp, mods, matches, findings, beh))
     else:
-        render_text(target, fp, mods, matches, findings)
+        render_text(target, fp, mods, matches, findings, beh)
     return 0 if fp.is_bitrix else 2
 
 
@@ -210,11 +234,12 @@ def main(argv: List[str] | None = None) -> int:
     db = VulnDB.load(Path(args.db))
     hash_db = HashDB.load(Path(args.hash_db))
     checks = [] if args.no_misconfig else load_checks(Path(args.misconfig_db))
+    behavior = BehaviorConfig() if args.no_behavior else load_behavior(Path(args.behavior_db))
 
     rc = 0
     for t in targets:
         try:
-            rc |= _scan_one(t, args, db, hash_db, checks, show_progress=show_progress)
+            rc |= _scan_one(t, args, db, hash_db, checks, behavior, show_progress=show_progress)
         except KeyboardInterrupt:
             print("aborted", file=sys.stderr)
             return 130

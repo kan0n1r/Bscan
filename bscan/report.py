@@ -7,6 +7,7 @@ from typing import List
 from rich.console import Console
 from rich.table import Table
 
+from .behavior import BehaviorResult
 from .fingerprint import Fingerprint
 from .misconfig import Finding
 from .modules import ModuleScan
@@ -31,6 +32,7 @@ def render_text(
     modules: ModuleScan,
     matches: List[Match],
     findings: List[Finding] | None = None,
+    behavior: BehaviorResult | None = None,
 ) -> None:
     con = Console()
     con.rule(f"[bold]Bscan[/bold] — {target}")
@@ -53,7 +55,24 @@ def render_text(
     fp_tbl.add_row("Powered-By", fp.powered_by or "-")
     fp_tbl.add_row("Generator", fp.generator or "-")
     fp_tbl.add_row("Signals", ", ".join(fp.signals) or "-")
+    if behavior and behavior.range:
+        style = "yellow" if behavior.is_empty else "green"
+        fp_tbl.add_row(
+            "Behavior range",
+            f"[{style}]{behavior.range}[/{style}] [dim]({len(behavior.matched_probes)} hits)[/dim]",
+        )
     con.print(fp_tbl)
+
+    if behavior and behavior.constraints:
+        con.rule("Behavior signals")
+        tbl = Table()
+        tbl.add_column("source", style="bold")
+        tbl.add_column("implies")
+        for c in behavior.constraints:
+            tbl.add_row(c["source"], c["implies"])
+        con.print(tbl)
+        if behavior.is_empty:
+            con.print("[yellow]note: behavior constraints intersect to empty — probably a false-positive probe.[/yellow]")
 
     if modules.modules:
         con.rule("Modules")
@@ -117,6 +136,7 @@ def render_json(
     modules: ModuleScan,
     matches: List[Match],
     findings: List[Finding] | None = None,
+    behavior: BehaviorResult | None = None,
 ) -> str:
     payload = {
         "target": target,
@@ -131,5 +151,6 @@ def render_json(
             for m in matches
         ],
         "misconfigurations": [f.to_dict() for f in (findings or [])],
+        "behavior": behavior.to_dict() if behavior else None,
     }
     return json.dumps(payload, indent=2, ensure_ascii=False)

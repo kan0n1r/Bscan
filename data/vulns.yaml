@@ -1,0 +1,38 @@
+# Bscan vulnerability database
+# Schema:
+#   vulns:
+#     - id:        short unique id (e.g. BX-2022-001)
+#       title:     human-readable title
+#       target:    "core" | module name (e.g. "main", "iblock", "vote", "landing")
+#       severity:  low | medium | high | critical
+#       cve:       CVE id if assigned (optional)
+#       affected:  version range, e.g. ">=20.0.0,<22.0.400" (optional)
+#       fixed_in:  first fixed version, e.g. "22.0.400" (optional)
+#       refs:      list of URLs (optional)
+#
+# Either `affected` or `fixed_in` triggers a match. `affected` wins if both present.
+
+vulns:
+  - id: BX-2022-VOTE-RCE
+    title: "Vote module — unauthenticated RCE via crafted voting data"
+    target: vote
+    severity: critical
+    cve: CVE-2022-27228
+    fixed_in: "22.0.0"
+    refs:
+      - https://nvd.nist.gov/vuln/detail/CVE-2022-27228
+
+  - id: BX-2023-LANDING-SSRF
+    title: "Landing module — SSRF in preview handler"
+    target: landing
+    severity: high
+    affected: ">=20.0.0,<23.200.0"
+    refs:
+      - https://www.bitrix24.com/
+
+  - id: BX-CORE-XSS-GENERIC
+    title: "Core — reflected XSS in admin pages (older branches)"
+    target: core
+    severity: medium
+    fixed_in: "20.100.0"
+    refs: []

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
+import re as _re
 import sys
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlparse
 
 from rich.progress import (
     BarColumn,
@@ -51,6 +54,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-misconfig", action="store_true", help="Skip misconfiguration checks")
     p.add_argument("--no-behavior", action="store_true", help="Skip behavioral version fingerprinting")
     p.add_argument("--json", action="store_true", help="JSON output (suppresses banner/progress)")
+    p.add_argument("-o", "--output", help="Write JSON report to PATH (file or directory). Implies --json semantics for the file.")
     p.add_argument("-q", "--quiet", action="store_true", help="Suppress banner and progress")
     p.add_argument("-V", "--version", action="version", version=f"bscan {__version__}")
     return p
@@ -105,14 +109,11 @@ def _scan_quiet(
     findings = _run_misconfig(client, root, checks) if not args.no_misconfig else []
     beh = (
         run_behavior(client, behavior, root=root)
-        if not args.no_behavior and behavior.total_probes
+        if not args.no_behavior and behavior.enabled
         else None
     )
     matches = _collect_matches(fp, mods, db)
-    if args.json:
-        print(render_json(target, fp, mods, matches, findings, beh))
-    else:
-        render_text(target, fp, mods, matches, findings, beh)
+    _emit(target, args, fp, mods, matches, findings, beh)
     return 0 if fp.is_bitrix else 2
 
 
@@ -179,23 +180,71 @@ def _scan_with_progress(
             findings = _run_misconfig(client, root, checks, on_check=on_check)
 
         beh: Optional[BehaviorResult] = None
-        if not args.no_behavior and behavior.total_probes:
-            beh_task = progress.add_task(
-                "behavior", total=behavior.total_probes, detail=""
-            )
+        if not args.no_behavior and behavior.enabled:
+            if behavior.total_probes:
+                beh_task = progress.add_task(
+                    "behavior", total=behavior.total_probes, detail=""
+                )
 
-            def on_beh(pid: str, hit: bool) -> None:
-                marker = "[green]✓[/green]" if hit else "[dim]·[/dim]"
-                progress.update(beh_task, advance=1, detail=f"{marker} {pid}")
+                def on_beh(pid: str, hit: bool) -> None:
+                    marker = "[green]✓[/green]" if hit else "[dim]·[/dim]"
+                    progress.update(beh_task, advance=1, detail=f"{marker} {pid}")
 
-            beh = run_behavior(client, behavior, root=root, on_probe=on_beh)
+                beh = run_behavior(client, behavior, root=root, on_probe=on_beh)
+            else:
+                beh = run_behavior(client, behavior, root=root)
 
     matches = _collect_matches(fp, mods, db)
+    _emit(target, args, fp, mods, matches, findings, beh)
+    return 0 if fp.is_bitrix else 2
+
+
+_SAFE_HOST_RE = _re.compile(r"[^a-z0-9._-]+", _re.I)
+
+
+def _report_path(base: str, target: str) -> Path:
+    p = Path(base).expanduser()
+    if p.exists() and p.is_dir():
+        host = urlparse(target).hostname or "target"
+        host = _SAFE_HOST_RE.sub("_", host)
+        ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        return p / f"{host}-{ts}.json"
+    if base.endswith("/") or base.endswith(("\\",)):
+        p.mkdir(parents=True, exist_ok=True)
+        host = urlparse(target).hostname or "target"
+        host = _SAFE_HOST_RE.sub("_", host)
+        ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        return p / f"{host}-{ts}.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _save_summary(path: Path, target: str, fp, mods: ModuleScan,
+                  matches: List[Match], findings: List[Finding],
+                  beh: Optional[BehaviorResult]) -> str:
+    parts = [f"saved {path}"]
+    parts.append(f"bitrix={'yes' if fp.is_bitrix else 'no'}")
+    ver = fp.best_core_version
+    if ver:
+        parts.append(f"ver={ver}")
+    if beh and beh.range:
+        parts.append(f"range={beh.range}")
+    parts.append(f"modules={len(mods.modules)}")
+    parts.append(f"misconfigs={len(findings)}")
+    parts.append(f"vulns={len(matches)}")
+    return " ".join(parts)
+
+
+def _emit(target, args, fp, mods, matches, findings, beh) -> None:
+    payload = render_json(target, fp, mods, matches, findings, beh)
     if args.json:
-        print(render_json(target, fp, mods, matches, findings, beh))
+        print(payload)
     else:
         render_text(target, fp, mods, matches, findings, beh)
-    return 0 if fp.is_bitrix else 2
+    if args.output:
+        out = _report_path(args.output, target)
+        out.write_text(payload)
+        print(_save_summary(out, target, fp, mods, matches, findings, beh), file=sys.stderr)
 
 
 def _run_misconfig(client, root, checks, on_check=None) -> List[Finding]:

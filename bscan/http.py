@@ -13,6 +13,14 @@ DEFAULT_UA = (
 )
 
 
+class TransportError(RuntimeError):
+    def __init__(self, method: str, url: str, cause: Exception) -> None:
+        super().__init__(f"{method} {url} failed: {cause}")
+        self.method = method
+        self.url = url
+        self.cause = cause
+
+
 @dataclass
 class Response:
     url: str
@@ -56,30 +64,22 @@ class Client:
         self.close()
 
     def get(self, path: str, **kwargs) -> Response:
-        url = urljoin(self.base_url, path.lstrip("/"))
-        try:
-            r = self._client.get(url, **kwargs)
-        except httpx.HTTPError as e:
-            return Response(url=url, status=0, headers={}, text=str(e), ok=False, content=b"")
-        return Response(
-            url=str(r.url),
-            status=r.status_code,
-            headers=dict(r.headers),
-            text=r.text,
-            ok=r.is_success,
-            content=r.content,
-        )
+        return self._request("GET", path, **kwargs)
 
     def head(self, path: str, **kwargs) -> Response:
+        return self._request("HEAD", path, **kwargs)
+
+    def _request(self, method: str, path: str, **kwargs) -> Response:
         url = urljoin(self.base_url, path.lstrip("/"))
         try:
-            r = self._client.head(url, **kwargs)
+            r = self._client.request(method, url, **kwargs)
         except httpx.HTTPError as e:
-            return Response(url=url, status=0, headers={}, text=str(e), ok=False)
+            raise TransportError(method, url, e) from e
         return Response(
             url=str(r.url),
             status=r.status_code,
             headers=dict(r.headers),
-            text="",
+            text="" if method == "HEAD" else r.text,
             ok=r.is_success,
+            content=b"" if method == "HEAD" else r.content,
         )

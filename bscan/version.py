@@ -79,17 +79,21 @@ class Range:
                 if part.startswith(op):
                     v = parse_version(part[len(op):].strip())
                     if op == ">=":
-                        r.lower = _max(r.lower, v, inclusive=True)
-                        r.lower_inclusive = True
+                        r.lower, r.lower_inclusive = _merge_lower(
+                            r.lower, r.lower_inclusive, v, True
+                        )
                     elif op == ">":
-                        r.lower = _max(r.lower, v, inclusive=False)
-                        r.lower_inclusive = False
+                        r.lower, r.lower_inclusive = _merge_lower(
+                            r.lower, r.lower_inclusive, v, False
+                        )
                     elif op == "<=":
-                        r.upper = _min(r.upper, v, inclusive=True)
-                        r.upper_inclusive = True
+                        r.upper, r.upper_inclusive = _merge_upper(
+                            r.upper, r.upper_inclusive, v, True
+                        )
                     elif op == "<":
-                        r.upper = _min(r.upper, v, inclusive=False)
-                        r.upper_inclusive = False
+                        r.upper, r.upper_inclusive = _merge_upper(
+                            r.upper, r.upper_inclusive, v, False
+                        )
                     elif op in ("=", "=="):
                         r.lower = v
                         r.upper = v
@@ -164,13 +168,27 @@ def _gt(a: VerTuple, b: VerTuple) -> bool:
     return pa > pb
 
 
-def _max(a: Optional[VerTuple], b: VerTuple, inclusive: bool) -> VerTuple:
-    if a is None:
-        return b
-    return b if _gt(b, a) else a
+def _merge_lower(
+    current: Optional[VerTuple],
+    current_inclusive: bool,
+    candidate: VerTuple,
+    candidate_inclusive: bool,
+) -> tuple[VerTuple, bool]:
+    if current is None or _gt(candidate, current):
+        return candidate, candidate_inclusive
+    if _eq(candidate, current):
+        return current, current_inclusive and candidate_inclusive
+    return current, current_inclusive
 
 
-def _min(a: Optional[VerTuple], b: VerTuple, inclusive: bool) -> VerTuple:
-    if a is None:
-        return b
-    return b if _lt(b, a) else a
+def _merge_upper(
+    current: Optional[VerTuple],
+    current_inclusive: bool,
+    candidate: VerTuple,
+    candidate_inclusive: bool,
+) -> tuple[VerTuple, bool]:
+    if current is None or _lt(candidate, current):
+        return candidate, candidate_inclusive
+    if _eq(candidate, current):
+        return current, current_inclusive and candidate_inclusive
+    return current, current_inclusive

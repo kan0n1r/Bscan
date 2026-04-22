@@ -32,7 +32,9 @@ class Check:
     id: str
     title: str
     severity: str
+    category: str = "misconfig"
     path: str = "/"
+    paths: List[str] = field(default_factory=list)
     method: str = "GET"
     match_any: List[Dict[str, Any]] = field(default_factory=list)
     match_all: List[Dict[str, Any]] = field(default_factory=list)
@@ -64,12 +66,39 @@ def _cond_matches(cond: Dict[str, Any], resp: Response) -> tuple[bool, str]:
         if needle and needle in (resp.text or ""):
             return True, f"body contains {needle!r}"
         return False, ""
+    if "body_not_contains" in cond:
+        needle = cond["body_not_contains"]
+        if needle and needle not in (resp.text or ""):
+            return True, f"body lacks {needle!r}"
+        return False, ""
     if "body_regex" in cond:
         rx = re.compile(cond["body_regex"], re.I | re.S)
         m = rx.search(resp.text or "")
         if m:
             snippet = m.group(0)[:80]
             return True, f"body matches /{cond['body_regex']}/ → {snippet!r}"
+        return False, ""
+    if "content_length_gt" in cond:
+        size = len(resp.content or b"")
+        if size > int(cond["content_length_gt"]):
+            return True, f"content_length={size}"
+        return False, ""
+    if "content_type_contains" in cond:
+        content_type = resp.headers.get("content-type", "")
+        needle = cond["content_type_contains"]
+        if needle.lower() in content_type.lower():
+            return True, f"content-type: {content_type}"
+        return False, ""
+    if "content_type_regex" in cond:
+        content_type = resp.headers.get("content-type", "")
+        if re.search(cond["content_type_regex"], content_type, re.I):
+            return True, f"content-type: {content_type}"
+        return False, ""
+    if "header_missing" in cond:
+        name = cond["header_missing"].lower()
+        hv = next((v for k, v in resp.headers.items() if k.lower() == name), None)
+        if hv is None:
+            return True, f"missing header {name}"
         return False, ""
     if "header" in cond:
         name = cond["header"].lower()
@@ -114,6 +143,7 @@ def _evaluate(check: Check, resp: Response) -> Optional[Finding]:
         id=check.id,
         title=check.title,
         severity=check.severity,
+        category=check.category,
         evidence="; ".join(evidence_bits) or f"matched on {check.path}",
         url=resp.url,
         refs=list(check.refs),
@@ -135,11 +165,27 @@ def run_checks(
 ) -> List[Finding]:
     findings: List[Finding] = []
     for c in checks:
-        if c.method.upper() == "HEAD":
-            resp = client.head(c.path)
-        else:
-            resp = client.get(c.path)
-        fnd = _evaluate(c, resp)
+        paths = c.paths or [c.path]
+        fnd: Optional[Finding] = None
+        for path in paths:
+            if c.method.upper() == "HEAD":
+                resp = client.head(path)
+            else:
+                resp = client.get(path)
+            scoped = Check(
+                id=c.id,
+                title=c.title,
+                severity=c.severity,
+                category=c.category,
+                path=path,
+                method=c.method,
+                match_any=c.match_any,
+                match_all=c.match_all,
+                refs=c.refs,
+            )
+            fnd = _evaluate(scoped, resp)
+            if fnd:
+                break
         if on_check:
             on_check(c.id, fnd is not None)
         if fnd:

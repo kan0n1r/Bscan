@@ -9,9 +9,10 @@ from rich.table import Table
 
 from .behavior import BehaviorResult
 from .fingerprint import Fingerprint
+from .http import AuthConfig
 from .misconfig import Finding
 from .modules import ModuleScan
-from .vulndb import Match
+from .vulndb import Match, summarize_matches
 
 
 SEVERITY_STYLES = {
@@ -33,6 +34,7 @@ def render_text(
     matches: List[Match],
     findings: List[Finding] | None = None,
     behavior: BehaviorResult | None = None,
+    auth: AuthConfig | None = None,
 ) -> None:
     con = Console()
     con.rule(f"[bold]Bscan[/bold] — {target}")
@@ -55,6 +57,13 @@ def render_text(
     fp_tbl.add_row("Powered-By", fp.powered_by or "-")
     fp_tbl.add_row("Generator", fp.generator or "-")
     fp_tbl.add_row("Signals", ", ".join(fp.signals) or "-")
+    if auth and auth.enabled:
+        fp_tbl.add_row(
+            "Auth context",
+            f"authenticated [dim](headers={len(auth.headers)}, cookies={len(auth.cookies)})[/dim]",
+        )
+    else:
+        fp_tbl.add_row("Auth context", "anonymous")
     if behavior and behavior.range:
         style = "yellow" if behavior.is_empty else "green"
         fp_tbl.add_row(
@@ -109,10 +118,15 @@ def render_text(
         con.print(tbl)
 
     if matches:
+        risk = summarize_matches(matches)
+        con.print(
+            f"[bold]Risk score:[/bold] {risk.score}/100 [dim]({risk.rating}, matches={risk.matched_count})[/dim]"
+        )
         con.rule("Potential vulnerabilities")
         tbl = Table()
         tbl.add_column("id", style="bold")
         tbl.add_column("severity")
+        tbl.add_column("confidence")
         tbl.add_column("target")
         tbl.add_column("version")
         tbl.add_column("title")
@@ -121,6 +135,7 @@ def render_text(
             tbl.add_row(
                 m.vuln.id,
                 f"[{style}]{m.vuln.severity}[/{style}]",
+                f"{m.confidence_label} ({m.confidence})",
                 m.vuln.target,
                 m.detected_version or "-",
                 m.vuln.title,
@@ -137,9 +152,13 @@ def render_json(
     matches: List[Match],
     findings: List[Finding] | None = None,
     behavior: BehaviorResult | None = None,
+    auth: AuthConfig | None = None,
 ) -> str:
+    risk = summarize_matches(matches)
     payload = {
         "target": target,
+        "request": auth.to_metadata() if auth is not None else AuthConfig().to_metadata(),
+        "risk_summary": asdict(risk),
         "fingerprint": asdict(fp),
         "modules": {
             "modules": [asdict(m) for m in modules.modules],
@@ -147,7 +166,14 @@ def render_json(
             "components": modules.components,
         },
         "matches": [
-            {"vuln": asdict(m.vuln), "detected_version": m.detected_version}
+            {
+                "vuln": asdict(m.vuln),
+                "detected_version": m.detected_version,
+                "confidence": m.confidence,
+                "confidence_label": m.confidence_label,
+                "evidence_source": m.evidence_source,
+                "match_reason": m.match_reason,
+            }
             for m in matches
         ],
         "misconfigurations": [f.to_dict() for f in (findings or [])],

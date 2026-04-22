@@ -6,10 +6,19 @@
 #   status:          <int or list of ints>    response status is in the list
 #   not_status:      <int or list of ints>    response status is NOT in the list (and != 0 = network error)
 #   body_contains:   "string"                 body contains the substring
+#   body_not_contains: "string"               body does NOT contain the substring
 #   body_regex:      "pattern"                body matches the regex (case-insensitive, dotall)
+#   content_length_gt: <int>                  response body is larger than N bytes
+#   content_type_contains: "mime-fragment"    Content-Type contains substring
+#   content_type_regex: "pattern"             Content-Type matches regex
 #   header:          "name"                   header present; optional:
 #     value_contains: "substr"
 #     value_regex:    "pattern"
+#   header_missing:  "name"                   header absent
+#
+# A check may also use:
+#   path:            "/single/path"
+#   paths:           ["/a", "/b"]             first matching path wins
 #
 # Severity: low | medium | high | critical
 
@@ -217,6 +226,16 @@ checks:
       - status: 200
       - body_contains: "ref:"
 
+  - id: BX-DOCROOT-GIT-CONFIG
+    title: ".git/config exposed"
+    severity: critical
+    path: /.git/config
+    match_all:
+      - status: 200
+    match_any:
+      - body_contains: "[core]"
+      - body_contains: "[remote \"origin\"]"
+
   - id: BX-DOCROOT-SVN
     title: ".svn/entries exposed"
     severity: high
@@ -243,6 +262,40 @@ checks:
       - status: 200
       - body_regex: "Bud1"
 
+  - id: BX-DOCROOT-COMPOSER
+    title: "Composer metadata exposed"
+    severity: medium
+    category: files
+    paths:
+      - /composer.json
+      - /composer.lock
+    match_all:
+      - status: 200
+      - content_type_regex: "(json|text/plain|octet-stream)"
+    match_any:
+      - body_contains: "\"require\""
+      - body_contains: "\"packages\""
+
+  - id: BX-DOCROOT-BACKUP-ARTIFACT
+    title: "Common backup artifact exposed"
+    severity: critical
+    category: backups
+    method: HEAD
+    paths:
+      - /backup.zip
+      - /backup.tar.gz
+      - /backup.sql
+      - /backup.sql.gz
+      - /dump.sql
+      - /db.sql
+      - /site.zip
+      - /www.zip
+    match_all:
+      - not_status: [404, 403, 401]
+      - header_missing: x-bitrix-composite
+    match_any:
+      - content_type_regex: "(zip|gzip|sql|octet-stream|x-tar|compressed)"
+
   # ---------- Module install leakage (common modules) ----------
   # These rely on server serving raw PHP as text — rare but high-value when present.
 
@@ -254,3 +307,19 @@ checks:
       - status: 200
     match_any:
       - body_contains: "VERSION"
+
+  - id: BX-MISC-DB-ADMIN-TOOLS
+    title: "Database admin tool exposed in doc-root"
+    severity: high
+    category: tools
+    paths:
+      - /adminer.php
+      - /phpMyAdmin/
+      - /phpmyadmin/
+      - /pma/
+    match_all:
+      - status: 200
+      - body_not_contains: "<!-- Bitrix"
+    match_any:
+      - body_contains: "phpMyAdmin"
+      - body_contains: "Adminer"

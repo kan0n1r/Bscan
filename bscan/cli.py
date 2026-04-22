@@ -22,9 +22,9 @@ from .banner import print_banner, stderr_console
 from .fingerprint import fingerprint
 from .behavior import BehaviorConfig, BehaviorResult, load_config as load_behavior, run_behavior
 from .hashes import HashDB
-from .http import Client
+from .http import AuthConfig, Client
 from .misconfig import Check, Finding, audit_cookies, audit_headers, load_checks, run_checks
-from .modules import COMMON_MODULES, ModuleScan, scan_modules
+from .modules import COMMON_MODULES, DEEP_MODULES, ModuleScan, scan_modules
 from .report import render_json, render_text
 from .vulndb import Match, VulnDB
 
@@ -33,6 +33,7 @@ DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "vulns.yaml"
 DEFAULT_HASH_DB = Path(__file__).resolve().parent.parent / "data" / "core_js_hashes.yaml"
 DEFAULT_MISCONFIG = Path(__file__).resolve().parent.parent / "data" / "misconfig.yaml"
 DEFAULT_BEHAVIOR = Path(__file__).resolve().parent.parent / "data" / "behavior.yaml"
+DEFAULT_PROFILE = "default"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -47,9 +48,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--misconfig-db", default=str(DEFAULT_MISCONFIG), help="Path to misconfig YAML checks")
     p.add_argument("--behavior-db", default=str(DEFAULT_BEHAVIOR), help="Path to behavior YAML probes")
     p.add_argument("--proxy", help="HTTP(S) proxy, e.g. http://127.0.0.1:8080")
+    p.add_argument("--header", action="append", default=[], help="Attach request header, e.g. 'Authorization: Bearer ...'")
+    p.add_argument("--cookie", action="append", default=[], help="Attach cookie, e.g. 'PHPSESSID=...'")
+    p.add_argument("--cookie-file", help="Load cookies from a file (one name=value or Cookie: ... line per entry)")
     p.add_argument("--insecure", action="store_true", help="Skip TLS verification")
     p.add_argument("--timeout", type=float, default=15.0, help="Per-request timeout seconds")
     p.add_argument("--workers", type=int, default=8, help="Concurrent module probes")
+    p.add_argument("--profile", choices=["fast", "default", "deep"], default=DEFAULT_PROFILE, help="Scan depth profile")
     p.add_argument("--no-modules", action="store_true", help="Skip module scanning")
     p.add_argument("--no-misconfig", action="store_true", help="Skip misconfiguration checks")
     p.add_argument("--no-behavior", action="store_true", help="Skip behavioral version fingerprinting")
@@ -72,6 +77,85 @@ def _load_targets(args: argparse.Namespace) -> List[str]:
     return targets
 
 
+def _parse_header(value: str) -> tuple[str, str]:
+    if ":" not in value:
+        raise ValueError(f"invalid header {value!r}; expected 'Name: Value'")
+    name, raw = value.split(":", 1)
+    name = name.strip()
+    raw = raw.strip()
+    if not name or not raw:
+        raise ValueError(f"invalid header {value!r}; expected non-empty name and value")
+    return name, raw
+
+
+def _parse_cookie(value: str) -> tuple[str, str]:
+    if "=" not in value:
+        raise ValueError(f"invalid cookie {value!r}; expected 'name=value'")
+    name, raw = value.split("=", 1)
+    name = name.strip()
+    if not name:
+        raise ValueError(f"invalid cookie {value!r}; expected non-empty cookie name")
+    return name, raw.strip()
+
+
+def _parse_cookie_line(line: str) -> List[tuple[str, str]]:
+    if line.lower().startswith("cookie:"):
+        line = line.split(":", 1)[1].strip()
+    parts = [part.strip() for part in line.split(";") if part.strip()]
+    return [_parse_cookie(part) for part in parts]
+
+
+def _build_auth_config(args: argparse.Namespace) -> AuthConfig:
+    headers: dict[str, str] = {}
+    cookies: dict[str, str] = {}
+
+    for raw in args.header:
+        name, value = _parse_header(raw)
+        headers[name] = value
+
+    for raw in args.cookie:
+        name, value = _parse_cookie(raw)
+        cookies[name] = value
+
+    if args.cookie_file:
+        for line in Path(args.cookie_file).read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            for name, value in _parse_cookie_line(line):
+                cookies[name] = value
+
+    return AuthConfig(headers=headers, cookies=cookies)
+
+
+def _profile_candidates(profile: str) -> Optional[List[str]]:
+    if profile == "fast":
+        return []
+    if profile == "deep":
+        return sorted(set(COMMON_MODULES) | set(DEEP_MODULES))
+    return None
+
+
+def _profile_workers(profile: str, workers: int) -> int:
+    if profile == "deep":
+        return max(workers, 12)
+    if profile == "fast":
+        return min(workers, 4)
+    return workers
+
+
+def _scan_modules_enabled(args: argparse.Namespace) -> bool:
+    return not args.no_modules
+
+
+def _misconfig_enabled(args: argparse.Namespace) -> bool:
+    return not args.no_misconfig and getattr(args, "profile", DEFAULT_PROFILE) != "fast"
+
+
+def _behavior_enabled(args: argparse.Namespace) -> bool:
+    return not args.no_behavior and getattr(args, "profile", DEFAULT_PROFILE) != "fast"
+
+
 def _scan_one(
     target: str,
     args: argparse.Namespace,
@@ -86,6 +170,7 @@ def _scan_one(
         timeout=args.timeout,
         verify=not args.insecure,
         proxy=args.proxy,
+        auth=args.auth,
     ) as client:
         if show_progress:
             rc = _scan_with_progress(target, client, args, db, hash_db, checks, behavior)
@@ -105,15 +190,23 @@ def _scan_quiet(
 ) -> int:
     fp = fingerprint(client, hash_db=hash_db)
     root = client.get("/")
-    mods = scan_modules(client, root, workers=args.workers) if not args.no_modules else ModuleScan()
-    findings = _run_misconfig(client, root, checks) if not args.no_misconfig else []
+    if _scan_modules_enabled(args):
+        mods = scan_modules(
+            client,
+            root,
+            candidates=_profile_candidates(args.profile),
+            workers=_profile_workers(args.profile, args.workers),
+        )
+    else:
+        mods = ModuleScan()
+    findings = _run_misconfig(client, root, checks) if _misconfig_enabled(args) else []
     beh = (
         run_behavior(client, behavior, root=root)
-        if not args.no_behavior and behavior.enabled
+        if _behavior_enabled(args) and behavior.enabled
         else None
     )
     matches = _collect_matches(fp, mods, db)
-    _emit(target, args, fp, mods, matches, findings, beh)
+    _emit(target, args, fp, mods, matches, findings, beh, auth=args.auth)
     return 0 if fp.is_bitrix else 2
 
 
@@ -127,9 +220,10 @@ def _scan_with_progress(
     behavior: BehaviorConfig,
 ) -> int:
     con = stderr_console()
-    total_modules = 0 if args.no_modules else len(COMMON_MODULES)
+    module_candidates = _profile_candidates(args.profile)
+    total_modules = 0 if not _scan_modules_enabled(args) else len(module_candidates or COMMON_MODULES)
     fp_total = 4 + len(hash_db.paths) + 1
-    total_checks = 0 if args.no_misconfig else len(checks)
+    total_checks = 0 if not _misconfig_enabled(args) else len(checks)
 
     with Progress(
         SpinnerColumn(),
@@ -153,7 +247,7 @@ def _scan_with_progress(
 
         root = client.get("/")
 
-        if args.no_modules:
+        if not _scan_modules_enabled(args):
             mods = ModuleScan()
         else:
             mod_task = progress.add_task(
@@ -164,9 +258,15 @@ def _scan_with_progress(
                 marker = "[green]+[/green]" if found else "[dim]-[/dim]"
                 progress.update(mod_task, advance=1, detail=f"{marker} {name}")
 
-            mods = scan_modules(client, root, workers=args.workers, on_probe=on_probe)
+            mods = scan_modules(
+                client,
+                root,
+                candidates=module_candidates,
+                workers=_profile_workers(args.profile, args.workers),
+                on_probe=on_probe,
+            )
 
-        if args.no_misconfig:
+        if not _misconfig_enabled(args):
             findings: List[Finding] = []
         else:
             misc_task = progress.add_task(
@@ -180,7 +280,7 @@ def _scan_with_progress(
             findings = _run_misconfig(client, root, checks, on_check=on_check)
 
         beh: Optional[BehaviorResult] = None
-        if not args.no_behavior and behavior.enabled:
+        if _behavior_enabled(args) and behavior.enabled:
             if behavior.total_probes:
                 beh_task = progress.add_task(
                     "behavior", total=behavior.total_probes, detail=""
@@ -195,7 +295,7 @@ def _scan_with_progress(
                 beh = run_behavior(client, behavior, root=root)
 
     matches = _collect_matches(fp, mods, db)
-    _emit(target, args, fp, mods, matches, findings, beh)
+    _emit(target, args, fp, mods, matches, findings, beh, auth=args.auth)
     return 0 if fp.is_bitrix else 2
 
 
@@ -235,12 +335,12 @@ def _save_summary(path: Path, target: str, fp, mods: ModuleScan,
     return " ".join(parts)
 
 
-def _emit(target, args, fp, mods, matches, findings, beh) -> None:
-    payload = render_json(target, fp, mods, matches, findings, beh)
+def _emit(target, args, fp, mods, matches, findings, beh, auth: AuthConfig) -> None:
+    payload = render_json(target, fp, mods, matches, findings, beh, auth=auth)
     if args.json:
         print(payload)
     else:
-        render_text(target, fp, mods, matches, findings, beh)
+        render_text(target, fp, mods, matches, findings, beh, auth=auth)
     if args.output:
         out = _report_path(args.output, target)
         out.write_text(payload)
@@ -259,11 +359,19 @@ def _collect_matches(fp, mods: ModuleScan, db: VulnDB) -> List[Match]:
     matches: List[Match] = []
     core_version = fp.best_core_version
     if core_version:
-        matches += db.match("core", core_version)
-        matches += db.match("main", core_version)
+        if fp.hash_version:
+            source = "hash_match"
+        elif fp.main_module_version:
+            source = "core_js"
+        elif fp.core_version:
+            source = "generator"
+        else:
+            source = "unknown"
+        matches += db.match("core", core_version, evidence_source=source)
+        matches += db.match("main", core_version, evidence_source=source)
     for m in mods.modules:
         if m.version:
-            matches += db.match(m.name, m.version)
+            matches += db.match(m.name, m.version, evidence_source=m.source or "unknown")
     return matches
 
 
@@ -272,6 +380,11 @@ def main(argv: List[str] | None = None) -> int:
     targets = _load_targets(args)
     if not targets:
         print("error: provide -u URL or -f FILE", file=sys.stderr)
+        return 2
+    try:
+        args.auth = _build_auth_config(args)
+    except (OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
         return 2
 
     show_banner = not (args.json or args.quiet)

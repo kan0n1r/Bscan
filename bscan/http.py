@@ -64,30 +64,22 @@ class Client:
         self.close()
 
     def get(self, path: str, **kwargs) -> Response:
-        url = urljoin(self.base_url, path.lstrip("/"))
-        try:
-            r = self._client.get(url, **kwargs)
-        except httpx.HTTPError as e:
-            raise TransportError("GET", url, e) from e
-        return Response(
-            url=str(r.url),
-            status=r.status_code,
-            headers=dict(r.headers),
-            text=r.text,
-            ok=r.is_success,
-            content=r.content,
-        )
+        return self._request("GET", path, **kwargs)
 
     def head(self, path: str, **kwargs) -> Response:
+        return self._request("HEAD", path, **kwargs)
+
+    def _request(self, method: str, path: str, **kwargs) -> Response:
         url = urljoin(self.base_url, path.lstrip("/"))
         try:
-            r = self._client.head(url, **kwargs)
+            r = self._client.request(method, url, **kwargs)
         except httpx.HTTPError as e:
-            raise TransportError("HEAD", url, e) from e
+            raise TransportError(method, url, e) from e
         return Response(
             url=str(r.url),
             status=r.status_code,
             headers=dict(r.headers),
-            text="",
+            text="" if method == "HEAD" else r.text,
             ok=r.is_success,
+            content=b"" if method == "HEAD" else r.content,
         )

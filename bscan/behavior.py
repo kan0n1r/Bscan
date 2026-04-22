@@ -59,6 +59,15 @@ class BehaviorConfig:
     def total_probes(self) -> int:
         return len(self.probes) + (1 if self.errorpage_matchers else 0)
 
+    @property
+    def enabled(self) -> bool:
+        return bool(
+            self.probes
+            or self.errorpage_matchers
+            or self.cookie_rules
+            or self.header_rules
+        )
+
 
 @dataclass
 class BehaviorResult:

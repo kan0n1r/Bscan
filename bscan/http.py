@@ -13,6 +13,14 @@ DEFAULT_UA = (
 )
 
 
+class TransportError(RuntimeError):
+    def __init__(self, method: str, url: str, cause: Exception) -> None:
+        super().__init__(f"{method} {url} failed: {cause}")
+        self.method = method
+        self.url = url
+        self.cause = cause
+
+
 @dataclass
 class Response:
     url: str
@@ -60,7 +68,7 @@ class Client:
         try:
             r = self._client.get(url, **kwargs)
         except httpx.HTTPError as e:
-            return Response(url=url, status=0, headers={}, text=str(e), ok=False, content=b"")
+            raise TransportError("GET", url, e) from e
         return Response(
             url=str(r.url),
             status=r.status_code,
@@ -75,7 +83,7 @@ class Client:
         try:
             r = self._client.head(url, **kwargs)
         except httpx.HTTPError as e:
-            return Response(url=url, status=0, headers={}, text=str(e), ok=False)
+            raise TransportError("HEAD", url, e) from e
         return Response(
             url=str(r.url),
             status=r.status_code,

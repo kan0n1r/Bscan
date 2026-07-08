@@ -1,0 +1,24 @@
+{
+  "target": "https://example.com",
+  "fingerprint": {
+    "is_bitrix": false,
+    "confidence": 0,
+    "signals": [],
+    "core_version": null,
+    "main_module_version": null,
+    "hash_version": null,
+    "hash_source": null,
+    "core_js_sha256": null,
+    "server": "cloudflare",
+    "powered_by": null,
+    "generator": null
+  },
+  "modules": {
+    "modules": [],
+    "templates": [],
+    "components": []
+  },
+  "matches": [],
+  "misconfigurations": [],
+  "behavior": null
+}
